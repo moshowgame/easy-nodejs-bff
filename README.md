@@ -337,7 +337,9 @@ easy-nodejs-bff 提供了**开箱即用的可视化监控仪表盘**，无需额
 >
 > **依赖：** 仅需浏览器，无需安装任何前端构建工具（纯 HTML/CSS/JS + Chart.js CDN）
 
-### ✨ 功能亮点
+### 🖼️ Dashboard 效果预览
+
+![Dashboard Preview](./dashboard.png)
 
 | 特性 | 说明 |
 |------|------|
@@ -351,7 +353,7 @@ easy-nodejs-bff 提供了**开箱即用的可视化监控仪表盘**，无需额
 | 💫 **数字动画** | 指标数值平滑过渡动画，提升用户体验 |
 
 ### 🎛️ 界面布局
-![Dashboard Layout](docs/images/dashboard-layout.png)
+![Dashboard Layout](/dashboard.png)
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  📊 easy-nodejs-bff 监控仪表盘                               │
