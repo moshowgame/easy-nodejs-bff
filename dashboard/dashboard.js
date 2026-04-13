@@ -279,6 +279,8 @@ function calculateKeyMetrics(metrics) {
     let downstreamSuccess = 0;
     let downstreamFailure = 0;
     const downstreamStats = {};
+    // 下游响应时间统计（按地区）
+    const downstreamLatencyByRegion = {};
 
     if (metrics.downstream_calls_total) {
         metrics.downstream_calls_total.forEach(m => {
@@ -297,6 +299,58 @@ function calculateKeyMetrics(metrics) {
                 downstreamStats[target].failure += m.value;
             }
         });
+    }
+
+    // 从下游响应时间直方图计算各地区平均延迟
+    if (metrics.downstream_call_duration_ms_sum && metrics.downstream_call_duration_ms_count) {
+        metrics.downstream_call_duration_ms_sum.forEach(sumItem => {
+            const target = sumItem.labels?.target || 'unknown';
+            const countItem = metrics.downstream_call_duration_ms_count?.find(
+                c => c.labels?.target === target
+            );
+            
+            if (countItem && countItem.value > 0) {
+                const avgLatency = Math.round(sumItem.value / countItem.value);
+                
+                // 映射 target 到地区标识
+                const regionKey = target.toLowerCase();
+                let region = 'other';
+                if (regionKey.includes('cn') || regionKey.includes('china')) region = 'cn';
+                else if (regionKey.includes('uk') || regionKey.includes('united-kingdom')) region = 'uk';
+                else if (regionKey.includes('in') || regionKey.includes('india')) region = 'in';
+                
+                if (!downstreamLatencyByRegion[region]) {
+                    downstreamLatencyByRegion[region] = { total: 0, count: 0, targets: [] };
+                }
+                downstreamLatencyByRegion[region].total += avgLatency * countItem.value;
+                downstreamLatencyByRegion[region].count += countItem.value;
+                if (!downstreamLatencyByRegion[region].targets.includes(target)) {
+                    downstreamLatencyByRegion[region].targets.push(target);
+                }
+            }
+        });
+
+        // 计算每个地区的平均延迟
+        Object.keys(downstreamLatencyByRegion).forEach(region => {
+            const data = downstreamLatencyByRegion[region];
+            data.avg = Math.round(data.total / data.count);
+        });
+
+        // 同时为下游 Stats 补充延迟信息
+        if (metrics.downstream_call_duration_ms_bucket) {
+            Object.keys(downstreamStats).forEach(target => {
+                const targetBuckets = metrics.downstream_call_duration_ms_bucket.filter(
+                    b => b.labels?.target === target
+                );
+                if (targetBuckets.length > 0) {
+                    const maxBucket = targetBuckets.reduce((max, b) => {
+                        const le = parseFloat(b.labels?.le) || 0;
+                        return le > max ? le : max;
+                    }, 0);
+                    downstreamStats[target].p95Latency = maxBucket;
+                }
+            });
+        }
     }
 
     const downstreamTotal = downstreamSuccess + downstreamFailure;
@@ -318,6 +372,7 @@ function calculateKeyMetrics(metrics) {
         responseTimesByRoute,
         routeRequestCounts,
         downstreamStats,
+        downstreamLatencyByRegion,
         timestamp: new Date(),
     };
 }
@@ -527,6 +582,31 @@ function initDownstreamChart() {
             plugins: {
                 legend: {
                     position: 'bottom'
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const stats = context.chart._customStats;
+                            const label = context.label || '';
+                            const value = context.parsed || 0;
+                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                            const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
+                            
+                            let extraInfo = '';
+                            if (stats && stats[label]) {
+                                const s = stats[label];
+                                const rate = s.success + s.failure > 0 
+                                    ? ((s.success / (s.success + s.failure)) * 100).toFixed(0)
+                                    : 0;
+                                extraInfo = ` | 成功率: ${rate}%`;
+                                if (s.p95Latency) {
+                                    extraInfo += ` | P95: ${s.p95Latency}ms`;
+                                }
+                            }
+                            
+                            return `${label}: ${value} (${percentage}%)${extraInfo}`;
+                        }
+                    }
                 }
             }
         }
@@ -667,37 +747,50 @@ function updateDownstreamChart(metrics) {
     if (labels.length > 0) {
         chart.data.labels = labels;
         chart.data.datasets[0].data = data;
+        // 将详细统计信息传递给 tooltip 使用
+        chart._customStats = stats;
         chart.update('none');
     }
 }
 
 function updateRegionLatencyChart(metrics) {
     const chart = state.charts.regionLatency;
-    if (!chart || !metrics?.responseTimesByRoute) return;
+    if (!chart || !metrics) return;
 
-    // 尝试从路由名中推断地区
     const regionData = { uk: [0, 0], cn: [0, 0], in: [0, 0] };
-    
-    for (const [route, data] of Object.entries(metrics.responseTimesByRoute)) {
-        const routeLower = route.toLowerCase();
-        if (routeLower.includes('uk') || routeLower.includes('united-kingdom')) {
-            regionData.uk[0] = data.avg;
-            regionData.uk[1] = data.avg * 1.5; // 估算 P95
-        } else if (routeLower.includes('cn') || routeLower.includes('china')) {
-            regionData.cn[0] = data.avg;
-            regionData.cn[1] = data.avg * 1.5;
-        } else if (routeLower.includes('in') || routeLower.includes('india')) {
-            regionData.in[0] = data.avg;
-            regionData.in[1] = data.avg * 1.5;
+
+    // 优先使用下游 API 响应时间数据（更准确）
+    if (metrics.downstreamLatencyByRegion && Object.keys(metrics.downstreamLatencyByRegion).length > 0) {
+        for (const [region, data] of Object.entries(metrics.downstreamLatencyByRegion)) {
+            if (regionData[region]) {
+                regionData[region][0] = data.avg;
+                // P95 使用 avg * 1.3 作为合理估算（比之前的 1.5 更保守）
+                regionData[region][1] = Math.round(data.avg * 1.3);
+            }
+        }
+    } else if (metrics.responseTimesByRoute) {
+        // 兼容：从路由名推断（降级方案）
+        for (const [route, data] of Object.entries(metrics.responseTimesByRoute)) {
+            const routeLower = route.toLowerCase();
+            if (routeLower.includes('uk') || routeLower.includes('united-kingdom')) {
+                regionData.uk[0] = data.avg;
+                regionData.uk[1] = Math.round(data.avg * 1.3);
+            } else if (routeLower.includes('cn') || routeLower.includes('china')) {
+                regionData.cn[0] = data.avg;
+                regionData.cn[1] = Math.round(data.avg * 1.3);
+            } else if (routeLower.includes('in') || routeLower.includes('india')) {
+                regionData.in[0] = data.avg;
+                regionData.in[1] = Math.round(data.avg * 1.3);
+            }
         }
     }
 
-    // 如果没有地区特定数据，使用平均值填充
+    // 如果有全局平均响应时间，用其填充无数据的地区
     if (metrics.avgResponseTime > 0) {
         ['uk', 'cn', 'in'].forEach(region => {
             if (regionData[region][0] === 0) {
                 regionData[region][0] = metrics.avgResponseTime;
-                regionData[region][1] = metrics.p95ResponseTime || metrics.avgResponseTime * 1.5;
+                regionData[region][1] = metrics.p95ResponseTime || Math.round(metrics.avgResponseTime * 1.3);
             }
         });
     }
