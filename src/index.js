@@ -6,7 +6,7 @@
 const express = require('express');
 const { mergeConfig } = require('./config');
 const { monitoringMiddleware, errorMiddleware } = require('./monitoring/middleware');
-const { metrics } = require('./monitoring/metrics');
+const metrics = require('./monitoring/metrics');
 const logger = require('./monitoring/logger');
 const transformers = require('./bff-engine/transformers');
 const { orchestrate, pipeline, callAPI } = require('./bff-engine/orchestrator');

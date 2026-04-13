@@ -230,6 +230,24 @@ app.use('/uk', ukRouter);
 app.use('/cn', cnRouter);
 app.use('/in', inRouter);
 
+// 健康检查端点（供 Dashboard 检测使用）
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    service: 'mock-api',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      ukTop5: '/uk/top5',
+      cnTop5: '/cn/top5',
+      inTop5: '/in/top5',
+      ukList: '/uk/list',
+      cnList: '/cn/list',
+      inList: '/in/list',
+    },
+  });
+});
+
 // 根路径信息
 app.get('/', (req, res) => {
   res.json({

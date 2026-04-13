@@ -55,17 +55,28 @@ document.addEventListener('DOMContentLoaded', () => {
 async function fetchMetrics() {
     try {
         const url = `${CONFIG.bffUrl}${CONFIG.metricsEndpoint}`;
+        console.log(`[Dashboard] 正在获取指标: ${url}`);
+        
         const response = await fetch(url, { 
             method: 'GET',
             headers: { 'Accept': 'text/plain' }
         });
         
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         
-        return parsePrometheusText(await response.text());
+        const text = await response.text();
+        console.log(`[Dashboard] 获取到指标数据 (${text.length} 字符)`);
+        
+        return parsePrometheusText(text);
     } catch (error) {
-        console.error('获取指标失败:', error);
+        console.error(`[Dashboard] 获取指标失败: ${error.message}`, error);
         updateStatus('metricsStatus', false, error.message);
+        
+        // 显示用户友好的提示
+        if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+            console.warn('[Dashboard] 提示: BFF 服务可能未启动，或 CORS 未启用');
+        }
+        
         return null;
     }
 }
@@ -730,7 +741,7 @@ function updateChangeIndicator(elementId, oldValue, newValue, isHigherBetter) {
     const improved = isHigherBetter ? (newValue >= oldValue) : (newValue <= oldValue);
     
     element.textContent = `${improved ? '↑' : '↓'} ${Math.abs(change)}%`;
-    element.className = `metric-change ${improved ? 'change-up' : 'change-down}`;
+    element.className = `metric-change ${improved ? 'change-up' : 'change-down'}`;
 }
 
 // ==================== API 表格更新 ====================
@@ -834,33 +845,50 @@ function restartAutoRefresh() {
  */
 async function refreshData() {
     showLoading(true);
+    console.log('[Dashboard] 开始刷新数据...');
 
     try {
         // 并行执行多个请求
-        const [metricsPromise, bffHealthPromise] = await Promise.allSettled([
+        const [metricsResult, bffHealthResult] = await Promise.allSettled([
             fetchMetrics(),
             testApiHealth(CONFIG.bffUrl, 'bffStatus'),
         ]);
 
-        // 获取 Mock API 状态（非阻塞）
+        // 获取 Mock API 状态（非阻塞，不等待结果）
         testApiHealth(CONFIG.mockUrl, 'mockStatus');
 
+        // 处理 BFF 健康检查结果
+        if (bffHealthResult.status === 'rejected') {
+            console.warn(`[Dashboard] BFF 服务不可达: ${bffHealthResult.reason?.message}`);
+        }
+
         // 处理指标数据
-        if (metricsPromise.status === 'fulfilled' && metricsPromise.value) {
+        if (metricsResult.status === 'fulfilled' && metricsResult.value) {
+            const rawMetrics = metricsResult.value;
+            const metricCount = Object.keys(rawMetrics).length;
+            console.log(`[Dashboard] 解析到 ${metricCount} 种指标类型`);
+            
             updateStatus('metricsStatus', true);
-            const keyMetrics = calculateKeyMetrics(metricsPromise.value);
+            const keyMetrics = calculateKeyMetrics(rawMetrics);
             
             // 更新所有组件
             updateMetricCards(keyMetrics);
             updateCharts(keyMetrics);
             updateApiTable(keyMetrics?.downstreamStats);
             updateLastUpdate();
+            
+            console.log('[Dashboard] 数据刷新完成 ✓');
         } else {
-            console.warn('无法获取指标数据');
+            const reason = metricsResult.reason?.message || '未知原因';
+            console.warn(`[Dashboard] 无法获取指标数据: ${reason}`);
+            
+            // 显示空状态提示（可选：在界面上显示提示信息）
+            document.getElementById('totalRequests').textContent = '--';
+            document.getElementById('avgResponseTime').textContent = '--';
         }
 
     } catch (error) {
-        console.error('刷新失败:', error);
+        console.error('[Dashboard] 刷新过程异常:', error.message, error.stack);
     } finally {
         showLoading(false);
     }
