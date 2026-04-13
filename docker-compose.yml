@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  # BFF 应用服务
+  bff:
+    build: .
+    container_name: easy-nodejs-bff
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - METRICS_ENABLED=true
+      - LOG_LEVEL=info
+      - DEFAULT_TIMEOUT=5000
+      # API 端点（按需配置）
+      - API_UK_BASE=https://uk.api.example.com
+      - API_CN_BASE=https://cn.api.example.com
+      - API_IN_BASE=https://in.api.example.com
+      # 可选：Redis 缓存
+      # - REDIS_URL=redis://redis:6379
+      # 可选：分布式追踪
+      # - TRACING_ENABLED=true
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Prometheus 监控数据收集
+  prometheus:
+    image: prom/prometheus:v2.47.2
+    container_name: bff-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - monitoring
+
+  # Grafana 可视化仪表盘
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: bff-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboard.json:/etc/grafana/dashboards/bff-dashboard.json:ro
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring
+
+  # Redis 缓存（可选）
+  redis:
+    image: redis:7-alpine
+    container_name: bff-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    profiles:
+      - cache  # 使用 --profile cache 启用
+    networks:
+      - monitoring
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  redis_data:
+
+networks:
+  monitoring:
+    driver: bridge

@@ -1,0 +1,17 @@
+# 全局配置
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # BFF 应用指标
+  - job_name: 'easy-nodejs-bff'
+    static_configs:
+      - targets: ['bff:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Prometheus 自身监控
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
