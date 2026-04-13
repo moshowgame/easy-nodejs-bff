@@ -109,7 +109,7 @@ function parsePrometheusText(text) {
     const lines = text.split('\n');
     const metrics = {};
     
-    for (const line of lines) {
+    for (let line of lines) {
         line = line.trim();
         
         // 跳过注释和空行
