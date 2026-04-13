@@ -199,11 +199,33 @@ function calculateKeyMetrics(metrics) {
         
         avgResponseTime = totalCount > 0 ? Math.round(totalSum / totalCount) : 0;
 
-        // P95 计算（简化版本，使用最大桶）
-        const maxBucket = Math.max(
-            ...metrics.http_request_duration_ms_bucket.map(m => m.labels?.le ? parseFloat(m.labels.le) : 0)
-        );
-        p95ResponseTime = Math.round(maxBucket);
+        // P95 计算：从直方图桶中找到 95% 分位点
+        const buckets = metrics.http_request_duration_ms_bucket
+            .map(m => ({ le: m.labels?.le ? parseFloat(m.labels.le) : Infinity, count: m.value }))
+            .sort((a, b) => a.le - b.le);
+        
+        // 计算总请求数
+        const totalBucketCount = buckets.length > 0 
+            ? buckets[buckets.length - 1].count || totalRequests 
+            : totalRequests;
+        
+        // 找到第一个 >= 95% 的桶
+        if (totalBucketCount > 0) {
+            const threshold = totalBucketCount * 0.95;
+            for (const bucket of buckets) {
+                if (bucket.count >= threshold && bucket.le !== Infinity) {
+                    p95ResponseTime = Math.round(bucket.le);
+                    break;
+                }
+            }
+            // 如果没找到合适的桶，使用最大有限值
+            if (p95ResponseTime === 0) {
+                const finiteBuckets = buckets.filter(b => b.le !== Infinity);
+                if (finiteBuckets.length > 0) {
+                    p95ResponseTime = Math.round(finiteBuckets[finiteBuckets.length - 1].le);
+                }
+            }
+        }
 
         // 按路由分组响应时间
         sumValues.forEach(m => {
@@ -236,6 +258,18 @@ function calculateKeyMetrics(metrics) {
             } else {
                 successCount += m.value;
             }
+        });
+    }
+
+    // 按路由统计请求量（用于路由分布图）
+    let routeRequestCounts = {};
+    if (metrics.http_requests_total) {
+        metrics.http_requests_total.forEach(m => {
+            const route = m.labels?.route || 'unknown';
+            if (!routeRequestCounts[route]) {
+                routeRequestCounts[route] = { count: 0 };
+            }
+            routeRequestCounts[route].count += m.value;
         });
     }
 
@@ -282,6 +316,7 @@ function calculateKeyMetrics(metrics) {
         downstreamFailure,
         statusCodeDistribution,
         responseTimesByRoute,
+        routeRequestCounts,
         downstreamStats,
         timestamp: new Date(),
     };
@@ -586,15 +621,20 @@ function updateResponseTimeChart(metrics) {
 
 function updateRouteDistributionChart(metrics) {
     const chart = state.charts.routeDistribution;
-    if (!chart || !metrics?.statusCodeDistribution) return;
+    if (!chart || !metrics) return;
 
-    const routes = {};
-    if (typeof metrics.responseTimesByRoute === 'object') {
-        routes = { ...metrics.responseTimesByRoute };
+    // 使用 statusCodeDistribution 的路由数据，或从 responseTimesByRoute 获取
+    let routeCounts = {};
+    
+    if (metrics.routeRequestCounts) {
+        routeCounts = metrics.routeRequestCounts;
+    } else if (typeof metrics.responseTimesByRoute === 'object') {
+        // 兼容：使用响应时间数据的 count 作为请求量
+        routeCounts = { ...metrics.responseTimesByRoute };
     }
 
-    chart.data.labels = Object.keys(routes).map(r => r.replace(/^\/api\//, '/'));
-    chart.data.datasets[0].data = Object.values(routes).map(r => r.count || 0);
+    chart.data.labels = Object.keys(routeCounts).map(r => r.replace(/^\/api\//, '/'));
+    chart.data.datasets[0].data = Object.values(routeCounts).map(r => r.count || 0);
     chart.update('none');
 }
 
@@ -605,8 +645,8 @@ function updateStatusCodeChart(metrics) {
     const dist = metrics.statusCodeDistribution;
     chart.data.datasets[0].data = [
         dist['200'] || 0,
-        dist['400'] || 0 + (dist['401'] || 0) + (dist['403'] || 0) + (dist['404'] || 0),
-        dist['500'] || 0 + (dist['502'] || 0) + (dist['503'] || 0),
+        (dist['400'] || 0) + (dist['401'] || 0) + (dist['403'] || 0) + (dist['404'] || 0),
+        (dist['500'] || 0) + (dist['502'] || 0) + (dist['503'] || 0),
     ];
     chart.update('none');
 }
