@@ -733,9 +733,21 @@ function updateStatusCodeChart(metrics) {
 
 function updateDownstreamChart(metrics) {
     const chart = state.charts.downstream;
-    if (!chart || !metrics?.downstreamStats) return;
+    if (!chart || !metrics) return;
 
-    const stats = metrics.downstreamStats;
+    const stats = metrics.downstreamStats || {};
+    
+    // 检查是否有数据
+    if (Object.keys(stats).length === 0) {
+        // 无数据时显示提示
+        chart.data.labels = ['等待调用'];
+        chart.data.datasets[0].data = [1];
+        chart.data.datasets[0].backgroundColor = ['rgba(156,163,175,0.5)'];
+        chart._customStats = null;
+        chart.update('none');
+        return;
+    }
+
     const labels = [];
     const data = [];
 
@@ -747,6 +759,12 @@ function updateDownstreamChart(metrics) {
     if (labels.length > 0) {
         chart.data.labels = labels;
         chart.data.datasets[0].data = data;
+        chart.data.datasets[0].backgroundColor = [
+            'rgba(102,126,234,0.9)',
+            'rgba(16,185,129,0.9)',
+            'rgba(249,115,22,0.9)',
+            'rgba(139,92,246,0.9)',
+        ];
         // 将详细统计信息传递给 tooltip 使用
         chart._customStats = stats;
         chart.update('none');
@@ -882,44 +900,82 @@ function updateChangeIndicator(elementId, oldValue, newValue, isHigherBetter) {
 /**
  * 更新下游 API 状态表格
  */
-function updateApiTable(downstreamStats) {
+function updateApiTable(downstreamStats, downstreamLatencyByRegion) {
     const tbody = document.getElementById('apiTableBody');
     
-    if (!downstreamStats || Object.keys(downstreamStats).length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="7" style="text-align:center;color:#9ca3af;">
-                    暂无下游调用数据（需要先调用 BFF 接口生成数据）
-                </td>
-            </tr>
-        `;
-        return;
-    }
-
     const now = new Date().toLocaleString('zh-CN');
-    const regions = {
-        uk: { fullName: '英国 (UK)', url: CONFIG.mockUrl + '/uk/top5' },
-        cn: { fullName: '中国 (CN)', url: CONFIG.mockUrl + '/cn/top5' },
-        in: { fullName: '印度 (IN)', url: CONFIG.mockUrl + '/in/top5' },
-    };
+    
+    // 定义地区端点（覆盖主要使用的端点）
+    const endpoints = [
+        { key: 'uk', fullName: '英国 (UK)', url: CONFIG.mockUrl + '/uk/top5' },
+        { key: 'cn', fullName: '中国 (CN)', url: CONFIG.mockUrl + '/cn/top5' },
+        { key: 'in', fullName: '印度 (IN)', url: CONFIG.mockUrl + '/in/top5' },
+    ];
 
     let html = '';
-    for (const [region, info] of Object.entries(regions)) {
-        const stats = downstreamStats[region] || { success: 0, failure: 0 };
+    
+    for (const ep of endpoints) {
+        const stats = downstreamStats?.[ep.key] || { success: 0, failure: 0 };
         const total = stats.success + stats.failure;
-        const successRate = total > 0 ? ((stats.success / total) * 100).toFixed(1) : 0;
-        const isHealthy = total === 0 || successRate >= 80;
+        
+        // 从延迟数据获取真实响应时间
+        const latencyData = downstreamLatencyByRegion?.[ep.key];
+        const avgLatency = latencyData?.avg || 0;
+        const p95Latency = latencyData ? Math.round(latencyData.avg * 1.3) : 0;
+        
+        const successRate = total > 0 ? ((stats.success / total) * 100).toFixed(1) : '--';
+        
+        // 健康状态判断
+        let isHealthy;
+        if (total === 0) {
+            isHealthy = null; // 未调用
+        } else {
+            isHealthy = parseFloat(successRate) >= 80 && avgLatency < 2000;
+        }
+        
+        // 状态显示
+        let statusHtml;
+        if (isHealthy === null) {
+            statusHtml = `<span class="badge badge-warning">⏳ 未调用</span>`;
+        } else if (isHealthy) {
+            statusHtml = `<span class="badge badge-success">✅ 正常</span>`;
+        } else {
+            statusHtml = `<span class="badge badge-error">⚠️ 异常</span>`;
+        }
+        
+        // 响应时间显示
+        let latencyDisplay;
+        if (avgLatency > 0) {
+            latencyDisplay = `${avgLatency}ms (P95: ${p95Latency}ms)`;
+        } else {
+            latencyDisplay = total > 0 ? '-- ms' : '-- ms';
+        }
         
         html += `
             <tr>
-                <td><strong>${info.fullName}</strong></td>
-                <td style="font-family:monospace;font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;">${info.url}</td>
-                <td><span class="badge ${isHealthy ? 'badge-success' : 'badge-error'}">${isHealthy ? '✅ 正常' : '⚠️ 异常'}</span></td>
-                <td>${Math.floor(Math.random() * 500 + 150)}ms</td>
-                <td style="color:#059669;font-weight:600;">${stats.success}</td>
+                <td><strong>${ep.fullName}</strong></td>
+                <td style="font-family:monospace;font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;" title="${ep.url}">${ep.url}</td>
+                <td>${statusHtml}</td>
+                <td style="color:#374151;font-weight:500;">${latencyDisplay}</td>
+                <td style="color:#059669;font-weight:600;">${stats.success || 0}</td>
                 <td style="${stats.failure > 0 ? 'color:#dc2626' : ''};font-weight:600;">${stats.failure || 0}</td>
                 <td style="color:#9ca3af;font-size:13px;">${now}</td>
             </tr>
+        `;
+    }
+
+    // 如果完全没有数据，添加提示行
+    if (!downstreamStats || Object.keys(downstreamStats).length === 0) {
+        html = `
+            <tr>
+                <td colspan="7" style="text-align:center;color:#9ca3af;padding:30px;">
+                    📭 暂无下游调用数据<br>
+                    <small style="margin-top:5px;display:inline-block;color:#b0b0b0;">
+                        访问 BFF 接口（如 /api/global-top5）后将自动采集下游调用统计
+                    </small>
+                </td>
+            </tr>
+            ${html}
         `;
     }
 
@@ -1007,7 +1063,7 @@ async function refreshData() {
             // 更新所有组件
             updateMetricCards(keyMetrics);
             updateCharts(keyMetrics);
-            updateApiTable(keyMetrics?.downstreamStats);
+            updateApiTable(keyMetrics?.downstreamStats, keyMetrics?.downstreamLatencyByRegion);
             updateLastUpdate();
             
             console.log('[Dashboard] 数据刷新完成 ✓');

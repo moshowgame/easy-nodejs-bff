@@ -6,6 +6,37 @@
 const axios = require('axios');
 const { retry, withTimeout } = require('../utils/retry');
 
+// 延迟加载监控模块（避免循环依赖和未启用监控时的开销）
+let _monitorDownstream = null;
+let _downstreamCallDuration = null;
+function getMonitor() {
+  if (!_monitorDownstream) {
+    try {
+      const monitoring = require('../monitoring/middleware');
+      const metrics = require('../monitoring/metrics');
+      _monitorDownstream = monitoring.monitorDownstream;
+      _downstreamCallDuration = metrics.downstreamCallDuration;
+    } catch (e) {
+      // 监控模块不可用，返回空操作
+      return (target) => ({
+        recordSuccess: () => {},
+        recordFailure: () => {},
+      });
+    }
+  }
+  return _monitorDownstream;
+}
+
+function recordDownstreamDuration(target, duration) {
+  if (_downstreamCallDuration) {
+    try {
+      _downstreamCallDuration.labels(target).observe(duration);
+    } catch (e) {
+      // 静默失败
+    }
+  }
+}
+
 /**
  * 执行单个 API 调用
  * @param {Object} api - API 配置
@@ -23,6 +54,9 @@ async function callAPI(api, context = {}) {
     timeout = 5000,
     retries = 0, // 单个 API 可配置重试次数
   } = api;
+
+  const targetName = name || url;
+  const monitor = getMonitor()(targetName);
   
   const startTime = Date.now();
   
@@ -47,15 +81,23 @@ async function callAPI(api, context = {}) {
     
     const duration = Date.now() - startTime;
     
+    // 记录下游调用成功指标
+    monitor.recordSuccess(duration);
+    recordDownstreamDuration(targetName, duration);
+    
     return {
       ok: true,
       data: result.data,
       status: result.status,
       duration,
-      name: name || url,
+      name: targetName,
     };
   } catch (err) {
     const duration = Date.now() - startTime;
+    
+    // 记录下游调用失败指标
+    monitor.recordFailure(duration);
+    recordDownstreamDuration(targetName, duration);
     
     return {
       ok: false,
@@ -63,7 +105,7 @@ async function callAPI(api, context = {}) {
       code: err.code || null,
       status: err.response?.status || null,
       duration,
-      name: name || url,
+      name: targetName,
     };
   }
 }
